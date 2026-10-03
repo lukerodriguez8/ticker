@@ -37,6 +37,10 @@ final class MarqueeView: NSView {
     private let fps: Double = 30
     private let pause: TimeInterval = 3
     private var pauseUntil = Date()
+
+    var loopDuration: TimeInterval {
+        strip.loopDistance > 0 ? pause + TimeInterval(strip.loopDistance / speed) : 0
+    }
     private var timer: Timer?
 
     override init(frame: NSRect) {

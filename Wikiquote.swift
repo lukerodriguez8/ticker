@@ -10,7 +10,7 @@ enum Wikiquote {
         ("Mark_Zuckerberg", "Mark Zuckerberg"),
         ("Mike_Tyson", "Mike Tyson"), ("Bruce_Lee", "Bruce Lee"), ("Muhammad_Ali", "Muhammad Ali"),
         ("Kobe_Bryant", "Kobe Bryant"), ("Michael_Jordan", "Michael Jordan"), ("Vince_Lombardi", "Vince Lombardi"),
-        ("Sun_Tzu", "Sun Tzu"), ("Theodore_Roosevelt", "Theodore Roosevelt"),
+        ("Sun_Tzu", "Sun Tzu"),
         ("Elmore_Leonard", "Elmore Leonard"), ("Kurt_Vonnegut", "Kurt Vonnegut"), ("Anne_Lamott", "Anne Lamott"),
         ("Jack_London", "Jack London"), ("William_Zinsser", "William Zinsser"), ("Ernest_Hemingway", "Ernest Hemingway"),
         ("Hunter_S._Thompson", "Hunter S. Thompson"),
@@ -67,15 +67,16 @@ enum Wikiquote {
         let range = NSRange(raw.startIndex..., in: raw)
         for match in bold.matches(in: raw, range: range) {
             guard let r = Range(match.range(at: 1), in: raw) else { continue }
-            let candidate = clean(String(raw[r]))
+            guard let candidate = finish(clean(String(raw[r]))) else { continue }
             if isUsable(candidate), candidate.first?.isUppercase == true { return (candidate, true) }
         }
-        let whole = clean(raw)
+        guard let whole = finish(clean(raw)) else { return nil }
         return isUsable(whole) && whole.count <= 120 ? (whole, false) : nil
     }
 
     static func isUsable(_ text: String) -> Bool {
         (20...150).contains(text.count) && text.contains(" ")
+            && text.last.map { ".!?\"”’".contains($0) } == true
             && !text.contains(where: { "[]{}|=<>".contains($0) })
             && !text.lowercased().hasPrefix("as quoted")
             && isLatinScript(text)
@@ -143,6 +144,20 @@ enum Wikiquote {
             kept.append(item)
         }
         return kept
+    }
+
+    private static let danglers: Set<String> = ["that", "the", "a", "an", "of", "to", "and", "or", "but", "in", "on",
+                                                "for", "with", "as", "which", "who", "is", "are", "was", "be", "by", "from",
+                                                "if", "up", "my", "our", "their", "this"]
+
+    // drop trailing notes, reject mid-sentence fragments, add a missing period
+    static func finish(_ text: String) -> String? {
+        let s = unwrap(text).replacingOccurrences(of: "\\s*\\([^()]*\\)$", with: "", options: .regularExpression)
+            .trimmingCharacters(in: .whitespaces)
+        if let last = s.last, ".!?\"\u{201D}\u{2019}".contains(last) { return s }
+        let lastWord = s.split(separator: " ").last.map { $0.lowercased().trimmingCharacters(in: .punctuationCharacters) }
+        if let lastWord, danglers.contains(lastWord) { return nil }
+        return s.trimmingCharacters(in: CharacterSet(charactersIn: ",;: -\u{2013}\u{2014}")) + "."
     }
 
     static func unwrap(_ text: String) -> String {

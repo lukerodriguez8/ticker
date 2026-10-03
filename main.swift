@@ -132,9 +132,9 @@ final class Ticker: NSObject, NSApplicationDelegate, NSMenuDelegate {
     lazy var ratings = RatingStore(directory: supportDir)
     var isFetchingQuotes = false
 
-    var intervalMinutes: Int {
-        get { defaults.object(forKey: "intervalMinutes") as? Int ?? 5 }
-        set { defaults.set(newValue, forKey: "intervalMinutes") }
+    var intervalSeconds: Int {
+        get { defaults.object(forKey: "intervalSeconds") as? Int ?? 15 }
+        set { defaults.set(newValue, forKey: "intervalSeconds") }
     }
     var barWidth: Int {
         get { defaults.object(forKey: "barWidth") as? Int ?? 0 }
@@ -160,8 +160,10 @@ final class Ticker: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applicationDidFinishLaunching(_ note: Notification) {
         if let data = try? Data(contentsOf: fetchedFile),
            let stored = try? JSONDecoder().decode([StoredQuote].self, from: data) {
-            let cleaned = stored.filter { Wikiquote.isUsable($0.text) }
-                .map { StoredQuote(text: Wikiquote.unwrap($0.text), source: $0.source, page: $0.page) }
+            let pages = Set(Wikiquote.authors.map(\.page))
+            let cleaned = stored.compactMap { quote in
+                Wikiquote.finish(quote.text).map { StoredQuote(text: $0, source: quote.source, page: quote.page) }
+            }.filter { pages.contains($0.page) && Wikiquote.isUsable($0.text) }
             fetchedQuotes = Wikiquote.dedupe(cleaned, against: Content.quotes.map(\.0)) { $0.text }
         }
         rebuildQuotePool()
@@ -195,9 +197,16 @@ final class Ticker: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func scheduleRotation() {
         rotateTimer?.invalidate()
-        rotateTimer = Timer.scheduledTimer(timeInterval: TimeInterval(intervalMinutes * 60), target: self,
-                                           selector: #selector(advance), userInfo: nil, repeats: true)
-        rotateTimer?.tolerance = 15
+        // let a scrolling line finish one pass before moving on
+        let delay = max(TimeInterval(intervalSeconds), marquee.loopDuration + 2)
+        rotateTimer = Timer.scheduledTimer(timeInterval: delay, target: self,
+                                           selector: #selector(rotate), userInfo: nil, repeats: false)
+        rotateTimer?.tolerance = min(5, delay / 10)
+    }
+
+    @objc func rotate() {
+        advance()
+        scheduleRotation()
     }
 
     @objc func advance() {
@@ -310,7 +319,7 @@ final class Ticker: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func loadMoreQuotes() async {
         let last = defaults.object(forKey: "lastQuoteFetch") as? Date ?? .distantPast
-        guard !isFetchingQuotes, Date().timeIntervalSince(last) > 20 * 3600 || fetchedQuotes.count < 40 else { return }
+        guard !isFetchingQuotes, Date().timeIntervalSince(last) > 4 * 3600 || fetchedQuotes.count < 100 else { return }
         isFetchingQuotes = true
         defer { isFetchingQuotes = false }
 
@@ -323,7 +332,7 @@ final class Ticker: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         var chosen: [(page: String, name: String)] = []
         var remaining = eligible
-        while chosen.count < 4, !remaining.isEmpty {
+        while chosen.count < 6, !remaining.isEmpty {
             let weights = remaining.map { max(0.25, 1 + Double(ratings.score(author: $0.name))) }
             var roll = Double.random(in: 0..<weights.reduce(0, +))
             let index = weights.firstIndex { roll -= $0; return roll < 0 } ?? 0
@@ -337,14 +346,14 @@ final class Ticker: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let candidates = Wikiquote.quotes(fromWikitext: wikitext).filter { !known.contains($0.text) }
             let ranked = candidates.filter(\.highlight).shuffled() + candidates.filter { !$0.highlight }.shuffled()
             let picks = Wikiquote.dedupe(ranked, against: Array(known) + fresh.map(\.text)) { $0.text }
-            fresh += picks.prefix(8).map { StoredQuote(text: $0.text, source: author.name, page: author.page) }
+            fresh += picks.prefix(12).map { StoredQuote(text: $0.text, source: author.name, page: author.page) }
             recent.append(author.page)
         }
-        defaults.set(Array(recent.suffix(Wikiquote.authors.count - 4)), forKey: "recentAuthors")
+        defaults.set(Array(recent.suffix(Wikiquote.authors.count - 6)), forKey: "recentAuthors")
         guard !fresh.isEmpty else { return }
 
         defaults.set(Date(), forKey: "lastQuoteFetch")
-        fetchedQuotes = Array((fetchedQuotes + fresh).suffix(2000))
+        fetchedQuotes = Array((fetchedQuotes + fresh).suffix(3000))
         if let data = try? JSONEncoder().encode(fetchedQuotes) {
             try? FileManager.default.createDirectory(at: supportDir, withIntermediateDirectories: true)
             try? data.write(to: fetchedFile)
@@ -448,11 +457,11 @@ final class Ticker: NSObject, NSApplicationDelegate, NSMenuDelegate {
         submenu(menu, "Show", show)
 
         let every = NSMenu()
-        for (label, minutes) in [("5 minutes", 5), ("15 minutes", 15), ("20 minutes", 20), ("30 minutes", 30),
-                                 ("1 hour", 60), ("2 hours", 120)] {
+        for (label, seconds) in [("15 seconds", 15), ("30 seconds", 30), ("1 minute", 60), ("5 minutes", 300),
+                                 ("15 minutes", 900), ("1 hour", 3600)] {
             let item = add(to: every, label, #selector(setInterval))
-            item.representedObject = minutes
-            item.state = minutes == intervalMinutes ? .on : .off
+            item.representedObject = seconds
+            item.state = seconds == intervalSeconds ? .on : .off
         }
         submenu(menu, "Change every", every)
 
@@ -526,8 +535,8 @@ final class Ticker: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc func setInterval(_ sender: NSMenuItem) {
-        guard let minutes = sender.representedObject as? Int else { return }
-        intervalMinutes = minutes
+        guard let seconds = sender.representedObject as? Int else { return }
+        intervalSeconds = seconds
         scheduleRotation()
     }
 
